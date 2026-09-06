@@ -109,79 +109,59 @@ vec4 roundedRectangle(vec2 fragCoord, vec3 color, vec4 cornerRadius, vec2 blurSi
 // uv_min/uv_max: bounds da janela em espaço UV global
 GlassFragment glassRefraction(vec2 uv_tex, vec2 uv_min, vec2 uv_max, vec2 position, vec2 halfBlurSize, vec4 cornerRadius, float dist, float edgeFactor, float concaveFactor, float refractionStrength, float refractionRGBFringing)
 {
+    // === Kyant0 / AndroidLiquidGlass refraction (ported) ===
+    // H (band width, px)      = edge-thickness × minHalfSize     -- 不再受 30px 上限
+    // A (rim displacement px) = refractionStrength × minHalfSize -- refractionStrength = config × 0.05
+    // A/H = strength×0.05 / edge-thickness; ≥ 1.5 时边缘出现镜像回折 (Kyant0 demo 比例 = 2:1)
+    // profile: d(u) = A × (1 - sqrt(1 - (1-u)^2)), u = δ/H   (circleMap)
+    // 方向: SDF 梯度 (等价 Kyant0 depthEffect=false)
     float minHalfSize = min(halfBlurSize.x, halfBlurSize.y);
-    float bezelWidthPx = max(minHalfSize * lg_edge_thickness, 8.0 * niri_scale);
-    float edgeProximity = exp(dist / bezelWidthPx);
+    float bandPx = max(minHalfSize * lg_edge_thickness, 8.0 * niri_scale);
+    float edgeProximity = exp(dist / bandPx);
     vec2 uvScale = 1.0 / (halfBlurSize * 2.0);
-    float fringingFactor = refractionRGBFringing * 0.35;
 
-    // --- Kwin mode (SDF gradient) ---
     const float h = 1.0;
     vec2 gradient = vec2(
         roundedRectangleDist(position + vec2(h, 0.0), halfBlurSize, cornerRadius) - roundedRectangleDist(position - vec2(h, 0.0), halfBlurSize, cornerRadius),
         roundedRectangleDist(position + vec2(0.0, h), halfBlurSize, cornerRadius) - roundedRectangleDist(position - vec2(0.0, h), halfBlurSize, cornerRadius)
     );
     vec2 kwinNormal = length(gradient) > 0.0 ? -normalize(gradient) : vec2(0.0, 1.0);
-    float kwinStrength = min(0.4 * concaveFactor * refractionStrength, 1.0);
-    vec2 kwinOffset = kwinNormal * kwinStrength;
 
-    // --- HyprGlass mode (center direction) ---
-    vec2 inwardDir = refractionDir(uv_tex);
-    float hyprPx = refractionStrength * 50.0 * (lg_edge_thickness / 0.15);
-    float hyprMag = min(edgeProximity * hyprPx, minHalfSize * 0.15);
-    vec2 hyprOffset = inwardDir * hyprMag * uvScale;
-
-    // --- Blend between modes based on physical_refraction ---
-    float modeMix = clamp(lg_physical_refraction, 0.0, 1.0);
-    vec2 baseOffset = mix(kwinOffset, hyprOffset, modeMix);
-
-    // Fix Y-axis: position space has Y inverted relative to UV space
-    // (see position.y = -position.y in glass_effect).
-    baseOffset.y = -baseOffset.y;
-
-    // Glass normal for outline effects
-    vec2 normalXY = mix(kwinNormal, inwardDir, modeMix) * edgeProximity * refractionStrength * 0.5;
+    // Glass normal for outline/glow effects (kept from the old kwin path)
+    vec2 normalXY = kwinNormal * edgeProximity * refractionStrength * 0.5;
     vec3 glassNormal = normalize(vec3(normalXY, 1.0));
 
-    // Kwin mode: single sample (sharp, mirror-like)
-    // HyprGlass mode: multi-sample (smooth)
+    float depth = max(0.0, -dist);
+    float u = clamp(depth / bandPx, 0.0, 1.0);
+    float circle = 1.0 - sqrt(max(0.0, 1.0 - (1.0 - u) * (1.0 - u)));
+    float offsetPx = refractionStrength * minHalfSize * circle;
+
     vec4 color = vec4(0.0);
-    if (modeMix < 0.5) {
-        // Kwin mode: single sample (sharp, like original kwin)
-        vec2 coordG = clamp(uv_tex + baseOffset, uv_min, uv_max);
-        color.g = texture2D(tex, coordG).g;
-        color.a = texture2D(tex, coordG).a;
-
-        if (fringingFactor > 0.001 && edgeProximity > 0.01) {
-            vec2 coordR = clamp(uv_tex + baseOffset * (1.0 + fringingFactor), uv_min, uv_max);
-            vec2 coordB = clamp(uv_tex + baseOffset * (1.0 - fringingFactor), uv_min, uv_max);
-            color.r = texture2D(tex, coordR).r;
-            color.b = texture2D(tex, coordB).b;
-        } else {
-            color.r = texture2D(tex, coordG).r;
-            color.b = texture2D(tex, coordG).b;
-        }
+    if (offsetPx < 0.5) {
+        // 带外：原样采样
+        color = texture2D(tex, clamp(uv_tex, uv_min, uv_max));
     } else {
-        // Multi-sample for HyprGlass mode (smooth)
-        for (int i = 0; i < 3; i++) {
-            float t = (float(i) + 1.0) / 3.0;
-            vec2 sampleOffset = baseOffset * t;
+        vec2 baseOffset = kwinNormal * (offsetPx * uvScale);
+        baseOffset.y = -baseOffset.y;
 
-            vec2 coordG = clamp(uv_tex + sampleOffset, uv_min, uv_max);
-            color.g += texture2D(tex, coordG).g;
-            color.a += texture2D(tex, coordG).a;
-
-            if (fringingFactor > 0.001 && edgeProximity > 0.01) {
-                vec2 coordR = clamp(uv_tex + sampleOffset * (1.0 + fringingFactor), uv_min, uv_max);
-                vec2 coordB = clamp(uv_tex + sampleOffset * (1.0 - fringingFactor), uv_min, uv_max);
-                color.r += texture2D(tex, coordR).r;
-                color.b += texture2D(tex, coordB).b;
-            } else {
-                color.r += texture2D(tex, coordG).r;
-                color.b += texture2D(tex, coordG).b;
-            }
+        // Kyant0 七点光谱色散 (chromaticAberration)：以折射后坐标为中心 ±disp
+        if (lg_fringing > 0.001) {
+            vec2 refracted = uv_tex + baseOffset;
+            vec2 disp = baseOffset * lg_fringing;
+            vec4 red    = texture2D(tex, clamp(refracted + disp,               uv_min, uv_max));
+            vec4 orange = texture2D(tex, clamp(refracted + disp * (2.0 / 3.0), uv_min, uv_max));
+            vec4 yellow = texture2D(tex, clamp(refracted + disp * (1.0 / 3.0), uv_min, uv_max));
+            vec4 green  = texture2D(tex, clamp(refracted,                      uv_min, uv_max));
+            vec4 cyan   = texture2D(tex, clamp(refracted - disp * (1.0 / 3.0), uv_min, uv_max));
+            vec4 blue   = texture2D(tex, clamp(refracted - disp * (2.0 / 3.0), uv_min, uv_max));
+            vec4 purple = texture2D(tex, clamp(refracted - disp,               uv_min, uv_max));
+            color.r = red.r    / 3.5 + orange.r / 3.5 + yellow.r / 3.5 + purple.r / 7.0;
+            color.g = orange.g / 7.0 + yellow.g / 3.5 + green.g  / 3.5 + cyan.g   / 3.5;
+            color.b = cyan.b   / 3.0 + blue.b   / 3.0 + purple.b / 3.0;
+            color.a = (red.a + orange.a + yellow.a + green.a + cyan.a + blue.a + purple.a) / 7.0;
+        } else {
+            color = texture2D(tex, clamp(uv_tex + baseOffset, uv_min, uv_max));
         }
-        color /= 3.0;
     }
 
     return GlassFragment(color, dist, edgeFactor, concaveFactor, glassNormal, 1.0);

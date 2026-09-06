@@ -1105,7 +1105,7 @@ impl Default for LiquidGlass {
             dilute_strength: 0.0,
             dilute_fringing: 0.0,
             physical_refraction: 0.0,
-            lens_distortion: 0.5,
+            lens_distortion: 0.0,
             brightness: 1.0,
             contrast: 1.0,
             saturation: 0.85,
