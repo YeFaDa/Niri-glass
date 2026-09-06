@@ -314,7 +314,12 @@ vec3 applyFrostedTint(vec3 color, float edgeProximity) {
 vec3 glassOutline(vec2 position, vec2 blurSize, GlassFragment s, float glowStrength, float edgeLighting, float edgeProximity)
 {
     float rimMask = clamp(0.25 * s.concaveFactor, 0.0, glowStrength);
-    vec3 glow = mix(s.color.rgb, vec3(1.0), rimMask);
+    // 内容色高光：边框光取折射内容色（绕亮度轴提饱和 ×2、提亮 ×1.3、5% 抬底），替代纯白
+    // 暗内容下光也随之变暗——这是"反射内部颜色"的物理行为
+    vec3 cc = s.color.rgb;
+    float cLum = dot(cc, vec3(0.299, 0.587, 0.114));
+    vec3 contentLight = clamp(mix(vec3(cLum), cc, 2.0) * 1.3 + vec3(0.05), 0.0, 1.0);
+    vec3 glow = mix(s.color.rgb, contentLight, rimMask);
     if (edgeLighting > 0.001) {
         glow += (s.color.rgb * s.concaveFactor) * edgeLighting;
     }
@@ -329,21 +334,21 @@ vec3 glassOutline(vec2 position, vec2 blurSize, GlassFragment s, float glowStren
         float highlightMask = smoothstep(-blurSize.y * 0.7, blurSize.y * 0.7, position.y) *
                               smoothstep(-blurSize.x * 0.7, blurSize.x * 0.7, position.x);
 
-        glow = mix(glow, vec3(1.0), thicknessShadow * shadowMask);
-        glow = mix(glow, vec3(1.0), thicknessShadow * highlightMask);
+        glow = mix(glow, contentLight, thicknessShadow * shadowMask);
+        glow = mix(glow, contentLight, thicknessShadow * highlightMask);
     }
 
     // HyprGlass-style Fresnel
     if (glowStrength > 0.001) {
         float fresnel = edgeProximity * edgeProximity * glowStrength * 0.15;
-        glow += vec3(1.0) * fresnel;
+        glow += contentLight * fresnel;
     }
 
     // HyprGlass-style specular (top-biased)
     if (glowStrength > 0.001) {
         float topBias = pow(max(1.0 - (position.y / blurSize.y + 0.5), 0.0), 2.0);
         float spec = topBias * edgeProximity * edgeProximity * glowStrength * 0.08;
-        glow += vec3(1.0, 0.99, 0.97) * spec;
+        glow += contentLight * spec;
     }
 
     // HyprGlass-style inner shadow (bottom rim)
