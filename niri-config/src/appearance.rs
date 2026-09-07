@@ -1171,7 +1171,7 @@ pub struct LiquidGlassPart {
     #[knuffel(child, unwrap(argument))]
     pub edge_thickness: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
-    pub edge_padding: Option<FloatOrInt<0, 100>>,
+    pub edge_padding: Option<FloatOrInt<0, 400>>,
 }
 
 impl MergeWith<LiquidGlassPart> for LiquidGlass {

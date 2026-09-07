@@ -129,7 +129,6 @@ impl BackgroundEffect {
         let liquid_glass = effect.liquid_glass.map(LiquidGlassOptions::from);
 
         if liquid_glass.is_some() {
-            warn!("LIQUID GLASS: update_render_elements liquid_glass={:?}", liquid_glass);
         }
 
         let mut options = Options {
@@ -216,7 +215,6 @@ impl BackgroundEffect {
                 &mut |elem| push(elem.into()),
             );
         } else {
-            warn!("LIQUID GLASS: non-xray path, padding_pixels={}, liquid_glass={:?}", padding_pixels, self.options.liquid_glass);
             let elem = self
                 .nonxray
                 .render(ns, params, blur_options, noise, saturation, self.options.liquid_glass, padding_pixels);
