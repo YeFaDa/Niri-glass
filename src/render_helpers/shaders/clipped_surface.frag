@@ -57,6 +57,13 @@ uniform float lg_adaptive_dim;
 uniform float lg_adaptive_boost;
 uniform float lg_edge_thickness;
 uniform float lg_padding_pixels;
+// Virtual corner round-over, as a multiple of the real corner radius.
+// 1.0 = plain rounded-rect SDF normal; 1.5 = Kyant0's `gradRadius = radius * 1.5`.
+uniform float lg_corner_fan;
+// Kyant0 AndroidLiquidGlass `depthEffect` (0 = off, 1 = reference behaviour).
+// Blends the inward radial into the edge normal so the refraction direction leans
+// toward the corner along the whole edge, not just inside the corner fan.
+uniform float lg_depth_effect;
 
 float niri_rounding_alpha(vec2 coords, vec2 size, vec4 corner_radius);
 vec4 postprocess(vec4 color);
@@ -102,6 +109,37 @@ vec4 roundedRectangle(vec2 fragCoord, vec3 color, vec4 cornerRadius, vec2 blurSi
     return vec4(color, mix(1.0, 0.0, s));
 }
 
+// Per-corner radius -- same quadrant rule as roundedRectangleDist.
+// cr: x=bottom-left, y=bottom-right, z=top-left, w=top-right
+float cornerRadiusAt(vec2 p, vec4 cr)
+{
+    return p.x > 0.0 ? (p.y > 0.0 ? cr.y : cr.w) : (p.y > 0.0 ? cr.x : cr.z);
+}
+
+// Inward unit normal of the silhouette, with a *virtual* corner round-over.
+//
+// The plain SDF normal is exactly perpendicular to the edge along a whole
+// straight run; it only turns inside the real corner arc (8-24px), so the turn
+// reads as a kink. Pushing the corner arc centre out to `fan` spreads that turn
+// into a fan. Kyant0 does exactly this, with `gradRadius = radius * 1.5`.
+//
+// Keep `fan` close to 1.5x the real radius. Widen it much further and the
+// direction rotates so slowly over such a long stretch of edge that the mapping
+// folds back on itself -- which shows up as a hook / loop in the content right
+// at the corner.
+vec2 glassInwardNormal(vec2 p, vec2 b, float fan)
+{
+    vec2 s = vec2(p.x >= 0.0 ? 1.0 : -1.0, p.y >= 0.0 ? 1.0 : -1.0);
+    float r = clamp(fan, 1e-3, min(b.x, b.y));
+    vec2 q = abs(p) - b + r;
+    if (q.x > 0.0 && q.y > 0.0) {
+        return normalize(s * (b - r) - p);   // radial, around the corner arc centre
+    } else if (q.x > q.y) {
+        return vec2(-s.x, 0.0);              // left / right edge
+    }
+    return vec2(0.0, -s.y);                  // top / bottom edge
+}
+
 // Refraction with two modes:
 // physical_refraction 0.0 = kwin (SDF gradient, pushes outward)
 // physical_refraction 1.0 = HyprGlass (center direction, pulls inward)
@@ -114,24 +152,48 @@ GlassFragment glassRefraction(vec2 uv_tex, vec2 uv_min, vec2 uv_max, vec2 positi
     // A (rim displacement px) = refractionStrength × minHalfSize -- refractionStrength = config × 0.05
     // A/H = strength×0.05 / edge-thickness; ≥ 1.5 时边缘出现镜像回折 (Kyant0 demo 比例 = 2:1)
     // profile: d(u) = A × (1 - sqrt(1 - (1-u)^2)), u = δ/H   (circleMap)
-    // 方向: SDF 梯度 (等价 Kyant0 depthEffect=false)
+    // 方向: 虚拟圆角法线（SDF 梯度的解析版 + 角部外扩）+ Kyant0 depthEffect 径向项
     float minHalfSize = min(halfBlurSize.x, halfBlurSize.y);
     float bandPx = max(minHalfSize * lg_edge_thickness, 8.0 * niri_scale);
     float edgeProximity = exp(dist / bandPx);
-    vec2 uvScale = 1.0 / (halfBlurSize * 2.0);
 
-    const float h = 1.0;
-    vec2 gradient = vec2(
-        roundedRectangleDist(position + vec2(h, 0.0), halfBlurSize, cornerRadius) - roundedRectangleDist(position - vec2(h, 0.0), halfBlurSize, cornerRadius),
-        roundedRectangleDist(position + vec2(0.0, h), halfBlurSize, cornerRadius) - roundedRectangleDist(position - vec2(0.0, h), halfBlurSize, cornerRadius)
-    );
-    vec2 kwinNormal = length(gradient) > 0.0 ? -normalize(gradient) : vec2(0.0, 1.0);
-
-    // Glass normal for outline/glow effects (kept from the old kwin path)
-    vec2 normalXY = kwinNormal * edgeProximity * refractionStrength * 0.5;
-    vec3 glassNormal = normalize(vec3(normalXY, 1.0));
+    // 窗口像素 -> 采集区 UV。input_to_geo 把 crop-UV 映射到 window-UV，其列向量的
+    // 长度给出两个方向各自的缩放；用它归一后位移才是各向同性的。旧版直接用
+    // geo_size，窗口越偏离正方形，位移方向越歪、幅度整体也偏大。
+    vec2 uvScale = 1.0 / ((halfBlurSize * 2.0)
+                          * vec2(length(input_to_geo[0].xy), length(input_to_geo[1].xy)));
 
     float depth = max(0.0, -dist);
+
+    // 虚拟圆角半径 = corner-fan × 该角真实圆角半径（Kyant0 用 radius × 1.5）。
+    // 距离剖面仍走真实轮廓，只有方向用这个放大的弧。
+    float rAt = min(cornerRadiusAt(position, cornerRadius), minHalfSize);
+    float fan = clamp(lg_corner_fan * rAt, rAt, minHalfSize);
+    vec2 fanNormal = glassInwardNormal(position, halfBlurSize, fan);
+
+    // Glass normal for outline/glow effects (kept from the old kwin path).
+    // Deliberately the *geometric* normal: the depth term below is a non-physical
+    // artistic tilt and must not steer the border highlight.
+    vec2 normalXY = fanNormal * edgeProximity * refractionStrength * 0.5;
+    vec3 glassNormal = normalize(vec3(normalXY, 1.0));
+
+    // Kyant0 depthEffect -- `normalize(gradSd + normalize(centeredCoord))`.
+    //
+    // The plain edge normal is exactly perpendicular to the edge, so along a
+    // straight edge the content only slides sideways and never leans toward the
+    // corner: outside the corner fan the tangential share of the displacement is
+    // a hard 0. Adding the *inward radial* rotates the direction progressively --
+    // measured on a 900x600 window, the tangential share goes from ~0.43 mid-far
+    // along the edge to ~0.12 at the other end -- which is the "wraps around the
+    // corner" of the reference implementation.
+    vec2 kwinNormal = fanNormal;
+    if (abs(lg_depth_effect) > 1e-4) {
+        float rl = length(position);
+        if (rl > 1e-4) {
+            kwinNormal = normalize(fanNormal - lg_depth_effect * (position / rl));
+        }
+    }
+
     float u = clamp(depth / bandPx, 0.0, 1.0);
     float circle = 1.0 - sqrt(max(0.0, 1.0 - (1.0 - u) * (1.0 - u)));
     float offsetPx = refractionStrength * minHalfSize * circle;
@@ -424,9 +486,9 @@ vec4 glass_effect(vec2 uv_tex, vec2 windowUV, vec4 baseColor, vec2 blurSize, vec
             float diluteIntensity = max(lg_refraction_dilute, 1.0);
             s = diluteRefraction(uv_tex, uv_min, uv_max, position, halfBlurSize, dist, edgeFactor, concaveFactor, diluteSt, lg_dilute_fringing, diluteIntensity);
         } else if (physicallyBasedRefraction < 0.5) {
-            // Kwin mode
-            vec4 r = clamp(cornerRadius * 2.0, min(64.0, minHalfSize), min(128.0, minHalfSize));
-            s = glassRefraction(uv_tex, uv_min, uv_max, position, halfBlurSize, r, dist, edgeFactor, concaveFactor, refractionStrength, refractionRGBFringing);
+            // Kwin mode -- real silhouette radius: the *distance* profile must
+            // start at the actual window edge, only the normal fans wider.
+            s = glassRefraction(uv_tex, uv_min, uv_max, position, halfBlurSize, cornerRadius, dist, edgeFactor, concaveFactor, refractionStrength, refractionRGBFringing);
         } else {
             // HyprGlass mode
             vec4 r = clamp(cornerRadius * 2.0, min(64.0, minHalfSize), min(128.0, minHalfSize));

@@ -26,6 +26,8 @@ pub struct LiquidGlassOptions {
     pub adaptive_boost: f64,
     pub edge_thickness: f64,
     pub edge_padding: f64,
+    pub corner_fan: f64,
+    pub depth_effect: f64,
 }
 
 impl From<niri_config::LiquidGlass> for LiquidGlassOptions {
@@ -57,6 +59,8 @@ impl From<niri_config::LiquidGlass> for LiquidGlassOptions {
             adaptive_boost: config.adaptive_boost,
             edge_thickness: config.edge_thickness,
             edge_padding: config.edge_padding,
+            corner_fan: config.corner_fan,
+            depth_effect: config.depth_effect,
         }
     }
 }

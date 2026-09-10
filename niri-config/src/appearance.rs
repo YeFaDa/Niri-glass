@@ -1083,6 +1083,13 @@ pub struct LiquidGlass {
     pub adaptive_boost: f64,
     pub edge_thickness: f64,
     pub edge_padding: f64,
+    /// Virtual corner round-over as a multiple of the real corner radius.
+    /// 1.0 = plain rounded-rect SDF normal, 1.5 = Kyant0 AndroidLiquidGlass.
+    pub corner_fan: f64,
+    /// Kyant0 AndroidLiquidGlass `depthEffect`: blends the inward radial into the
+    /// edge normal so the refraction leans toward the corner along the whole edge.
+    /// 0 disables it, 1.0 matches the reference implementation.
+    pub depth_effect: f64,
 }
 
 impl Default for LiquidGlass {
@@ -1114,6 +1121,8 @@ impl Default for LiquidGlass {
             adaptive_boost: 0.0,
             edge_thickness: 0.15,
             edge_padding: 0.0,
+            corner_fan: 1.5,
+            depth_effect: 1.0,
         }
     }
 }
@@ -1172,6 +1181,10 @@ pub struct LiquidGlassPart {
     pub edge_thickness: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
     pub edge_padding: Option<FloatOrInt<0, 400>>,
+    #[knuffel(child, unwrap(argument))]
+    pub corner_fan: Option<FloatOrInt<0, 100>>,
+    #[knuffel(child, unwrap(argument))]
+    pub depth_effect: Option<FloatOrInt<0, 100>>,
 }
 
 impl MergeWith<LiquidGlassPart> for LiquidGlass {
@@ -1204,6 +1217,8 @@ impl MergeWith<LiquidGlassPart> for LiquidGlass {
             adaptive_boost,
             edge_thickness,
             edge_padding,
+            corner_fan,
+            depth_effect,
         );
     }
 }

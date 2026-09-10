@@ -126,6 +126,8 @@ impl Shaders {
                     UniformName::new("lg_adaptive_boost", UniformType::_1f),
                     UniformName::new("lg_edge_thickness", UniformType::_1f),
                     UniformName::new("lg_padding_pixels", UniformType::_1f),
+                    UniformName::new("lg_corner_fan", UniformType::_1f),
+                    UniformName::new("lg_depth_effect", UniformType::_1f),
                 ],
             )
             .map_err(|err| {
@@ -177,6 +179,8 @@ impl Shaders {
                     UniformName::new("lg_adaptive_boost", UniformType::_1f),
                     UniformName::new("lg_edge_thickness", UniformType::_1f),
                     UniformName::new("lg_padding_pixels", UniformType::_1f),
+                    UniformName::new("lg_corner_fan", UniformType::_1f),
+                    UniformName::new("lg_depth_effect", UniformType::_1f),
                 ],
             )
             .map_err(|err| {

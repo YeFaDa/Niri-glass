@@ -162,6 +162,8 @@ impl FramebufferEffectElement {
                 Uniform::new("lg_adaptive_dim", lg.adaptive_dim as f32),
                 Uniform::new("lg_adaptive_boost", lg.adaptive_boost as f32),
                 Uniform::new("lg_edge_thickness", lg.edge_thickness as f32),
+                Uniform::new("lg_corner_fan", lg.corner_fan as f32),
+                Uniform::new("lg_depth_effect", lg.depth_effect as f32),
             ]);
         } else {
             uniforms.extend([
@@ -191,6 +193,8 @@ impl FramebufferEffectElement {
                 Uniform::new("lg_adaptive_dim", 0.0f32),
                 Uniform::new("lg_adaptive_boost", 0.0f32),
                 Uniform::new("lg_edge_thickness", 0.15f32),
+                Uniform::new("lg_corner_fan", 1.5f32),
+                Uniform::new("lg_depth_effect", 1.0f32),
             ]);
         }
 
