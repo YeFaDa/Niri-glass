@@ -1082,6 +1082,14 @@ pub struct LiquidGlass {
     pub adaptive_dim: f64,
     pub adaptive_boost: f64,
     pub edge_thickness: f64,
+    /// Sampling-region expansion as a fraction of the window's short side.
+    ///
+    /// - `< 0` (default `-1`): auto — derive from `refraction_strength` so the
+    ///   captured area always covers the maximum refraction displacement. Only
+    ///   applies when xray is off; the xray path samples the full screen and
+    ///   ignores padding entirely.
+    /// - `0`: no padding.
+    /// - `> 0`: manual override (fraction of the short side).
     pub edge_padding: f64,
     /// Virtual corner round-over as a multiple of the real corner radius.
     /// 1.0 = plain rounded-rect SDF normal, 1.5 = Kyant0 AndroidLiquidGlass.
@@ -1120,7 +1128,9 @@ impl Default for LiquidGlass {
             adaptive_dim: 0.0,
             adaptive_boost: 0.0,
             edge_thickness: 0.15,
-            edge_padding: 0.0,
+            // -1 = auto: derive the padding from refraction_strength (see
+            // render_for_tile). Only used when xray is off.
+            edge_padding: -1.0,
             corner_fan: 1.5,
             depth_effect: 1.0,
         }
@@ -1179,8 +1189,9 @@ pub struct LiquidGlassPart {
     pub adaptive_boost: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
     pub edge_thickness: Option<FloatOrInt<0, 100>>,
+    /// Negative = auto (derive from refraction-strength). See `LiquidGlass::edge_padding`.
     #[knuffel(child, unwrap(argument))]
-    pub edge_padding: Option<FloatOrInt<0, 400>>,
+    pub edge_padding: Option<FloatOrInt<-1, 400>>,
     #[knuffel(child, unwrap(argument))]
     pub corner_fan: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]

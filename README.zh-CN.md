@@ -116,36 +116,143 @@ cd Niri-glass
 
 ## 配置
 
-### 完整参数示例
+### 推荐配置
 
-- 想要效果正常,`xray` 必须是 `true`。不然边框会有 artifacts。
+先记住这条比值,它决定边缘的强弱:
 
-在 `config.kdl` 里:
+```
+A / H = (refraction-strength × 0.05) / edge-thickness
+```
+
+`A` 是边缘最大位移(px),`H` 是折射带宽(px)。**A/H ≥ 1.5 时边缘会出现镜像回折**,Kyant0 官方 demo 用的比例是 **2 : 1**。你的窗口圆角越小、窗口越窄,同一组参数看起来越猛。
+
+**① 对齐 Kyant0(默认推荐)**
 
 ```kdl
 window-rule {
-    match app-id =".*"
+    match app-id=".*"
     background-effect {
         blur true
-        xray true
+        xray true                 // 必须 true,否则边缘会有 artifacts
         liquid-glass {
-            refraction-strength 3.0
-            power-factor 10
-            refraction-power 1.0
-            glow-weight 0.0001
-            edge-lighting 0.2
-            saturation 0.9
-            vibrancy 0.2
-            adaptive-dim 0.2
-            adaptive-boost 0.2
-            physical-refraction 0
+            physical-refraction 0 // 0 = kwin / AndroidLiquidGlass 路径(本 fork 的改动都在这条路上)
+            refraction-strength 4.8   // A/H = (4.8 × 0.05) / 0.12 = 2.0,即 Kyant0 demo 比例
+            edge-thickness 0.12       // H = 0.12 × 半短边
+            corner-fan 1.5            // 虚拟圆角 = 圆角半径 × 1.5(= Kyant0 gradRadius)
+            depth-effect 1            // = Kyant0 depthEffect,让整条边都朝角部倾
+            fringing 0.2
+            glow-weight 0.8
+            edge-lighting 0.5
             lens-distortion 0
-            fringing 0
-
+            saturation 0.95
+            vibrancy 0.25
+            adaptive-dim 0.15
+            adaptive-boost 0.15
         }
     }
 }
 ```
+
+**② 更锐、几乎无回折(A/H ≈ 1.2)**
+
+```kdl
+liquid-glass {
+    physical-refraction 0
+    refraction-strength 2.9   // A/H = (2.9 × 0.05) / 0.12 = 1.21
+    edge-thickness 0.12
+    corner-fan 1.5
+    depth-effect 1
+    fringing 0.15
+    glow-weight 0.5
+    edge-lighting 0.4
+    saturation 0.95
+    vibrancy 0.2
+}
+```
+
+> 两个预设里的 `corner-fan` / `depth-effect` 本来就是代码默认值,写出来只是为了自文档化。
+> 想让角部"散"得更多就加大 `corner-fan`,但 **超过 3 角部会出现回折螺旋**。
+
+### 参数总表
+
+#### 折射(核心)
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `refraction-strength` | `1.0` | **总开关 + 幅度**。`0` = 完全关闭玻璃效果。实际强度 = `clamp(值 × 0.05, 0, 1)`,再乘半短边得到边缘最大位移 **A**(px) —— 也就是值到 `20` 就封顶。 |
+| `edge-thickness` | `0.15` | 折射带宽 **H** = `值 × 半短边`(px)。越厚,折射向窗口内部延伸越深。 |
+| `physical-refraction` | `0` | 折射模型。**`0` = kwin / AndroidLiquidGlass 路径**(本 fork 的改动都在这条路上);`≥ 0.5` = HyprGlass 路径。 |
+| `corner-fan` | **`1.5`** | 方向场的角弧半径 = `值 × 该角真实圆角半径`。`1.0` = 直接用圆角矩形的 SDF 法线,角部会读成一个折肘;`1.5` 等于 Kyant0 的 `gradRadius = radius × 1.5`。再大(≥ 3)角部会出现回折螺旋。 |
+| `depth-effect` | **`1.0`** | Kyant0 的 `depthEffect`:把「从窗口中心指向该点的径向」混进边缘法线,让**整条边**都朝角部倾,而不是只在角部扇形里才转。`0` = 关闭。 |
+| `lens-distortion` | `0.0` | 中央半球透镜,把整个窗口内容做成放大镜。`0` = 只保留边缘折射。 |
+| `edge-padding` | **`-1`(自动)** | 采集区向外扩的比例,`padding(px) = 值 × 窗口短边`。**只在 `xray false` 时生效**(xray 采整屏,不需要也不使用 padding)。<br>`-1`(默认)= **自动**,按 `refraction-strength × 0.025 × 1.2` 推导,保证刚好盖住最大折射位移,且随窗口尺寸自动缩放 —— 通常**不用手写**。<br>`0` = 关闭。`> 0` = 手动覆盖,必须是小数(写 `12` 就是 12× 短边)。 |
+
+#### 观感(颜色与高光)
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `fringing` | `0.3` | 七点光谱色散(Kyant0 的 chromaticAberration),边缘出现 RGB 彩边。 |
+| `glow-weight` | `0.08` | 边框高光强度。 |
+| `edge-lighting` | `1.0` | 边缘光:背景/壁纸的颜色向窗口边缘渗透。 |
+| `power-factor` | `3.0` | 法线幂次,决定边缘过渡的软硬。两种模式都生效。 |
+| `refraction-power` | `0.6` | 位移/斜面强度,**只在 HyprGlass 路径(`physical-refraction ≥ 0.5`)生效**。 |
+| `brightness` | `1.0` | 亮度。 |
+| `contrast` | `1.0` | 对比度。 |
+| `saturation` | `0.85` | 饱和度。 |
+| `vibrancy` | `0.12` | 鲜艳度:背景越灰,提亮越明显。 |
+| `adaptive-dim` | `0.0` | 按采样区亮度自适应压暗。 |
+| `adaptive-boost` | `0.0` | 按采样区亮度自适应提亮。 |
+
+#### 已废弃
+
+`refraction-a` / `refraction-b` / `refraction-c` / `refraction-d` / `glow-bias` / `glow-edge0` / `glow-edge1`
+是 HyprGlass 时期的参数,**shader 里已经没有任何引用**,只剩兼容解析。新配置不用写。
+
+#### 三种模式的优先级
+
+`glass_effect()` 里按这个顺序选路,前一条命中就不看后面的:
+
+1. `refraction-strength == 0` → 不做任何折射
+2. `refraction-dilute > 0` → 「稀薄」模式(独立实现,**会绕过下面两条,`corner-fan` / `depth-effect` 随之失效**)
+3. `physical-refraction < 0.5` → **kwin / AndroidLiquidGlass**(本 fork 的改动)
+4. 其余 → HyprGlass
+
+#### 关于 xray
+
+`background-effect` 里的 `xray` 决定玻璃从哪取背景像素,两条路互斥:
+
+| | `xray true` | `xray false` |
+|---|---|---|
+| 实现 | `Xray`(`src/render_helpers/xray.rs`) | `FramebufferEffect`(`framebuffer_effect.rs`) |
+| 采样源 | 单独渲染的**整屏背景缓冲** | 只能对屏幕当前位置做 blit 截屏 |
+| 能否读到窗口外像素 | 能 | **不能** |
+
+折射位移方向是**朝窗口外**的(`glassInwardNormal` 在边缘指向窗外),所以:
+
+- `xray true` → 窗外像素真实存在,边缘正常。**推荐用于普通窗口。**
+- `xray false` → 采样源里没有窗外像素,越界只能 clamp,边缘像素被横向重复拖出,**即「边缘 artifacts / 拉丝」**。
+
+要关 xray(比如层表面 overlay,本来就没有「背后」可穿)时,采集区必须外扩,否则仍有拉丝。**这一步是自动的**,默认 `edge-padding -1` 会按下面的公式推导,你不需要手写:
+
+```kdl
+// 自动推导(默认,edge-padding -1):
+//   A(px)       = refraction-strength × 0.025 × 短边   (最大位移出现在窗口边缘, u=0)
+//   padding(px) = 值 × 短边
+//   ⇒ 值 = refraction-strength × 0.025 × 1.2   (含 20% 余量)
+```
+
+想手动覆盖就写正数(短边比例)。若要自己算,理论下限是:
+
+| `refraction-strength` | 2 | 3 | 4 | 5 | 6 | 8 | 10 |
+|---|---|---|---|---|---|---|---|
+| 最小 `edge-padding` | 0.05 | 0.075 | 0.10 | 0.125 | 0.15 | 0.20 | 0.25 |
+
+注意 `edge-padding` 上限 400,且是**短边比例**、非像素,所以同一份配置在不同尺寸窗口下自动等比缩放。
+
+> ⚠️ 自动 padding 依赖 shader 里的 `windowSize` 修正(`clipped_surface.frag` 的 `main()`)。
+> 没有这个修正时,SDF / 圆角 / 边界遮罩会误用**扩展后**的 `geo_size`,
+> 导致玻璃整体视觉缩进去约 `1 - 短边/(短边+2×padding)`,`xray false` 的层表面会明显缩一圈。
+
 
 ### 磨砂玻璃外观的参数
 

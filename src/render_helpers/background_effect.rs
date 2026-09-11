@@ -57,6 +57,16 @@ pub struct RenderParams {
     pub geometry: Rectangle<f64, Logical>,
     /// Original window geometry before expansion (used by xray shader for SDF).
     pub original_geometry: Rectangle<f64, Logical>,
+    /// The effect geometry *before* the edge_padding expansion.
+    ///
+    /// This is the reference rectangle the shader must use: `geo_size` and
+    /// `input_to_geo` describe the window/surface in *unexpanded* coordinates,
+    /// and the shader applies no padding compensation of its own. Callers that
+    /// need a clip rectangle when `clip` is `None` (layers and popups pass
+    /// `clip_to_geometry = false`) must fall back to this, not to `geometry`,
+    /// or `geo_size` silently becomes the padded size and the glass is drawn
+    /// against the wrong rectangle.
+    pub unpadded_geometry: Rectangle<f64, Logical>,
     /// Effect subregion, will be clipped to `geometry`.
     ///
     /// `subregion.iter()` should return `geometry`-relative rectangles.
@@ -238,14 +248,6 @@ fn render_params_for_tile(
 
     let mut effect_geometry = geometry;
 
-    // Expand geometry by padding for liquid glass (captures content beyond window)
-    if padding > 0.0 {
-        effect_geometry.loc.x -= padding;
-        effect_geometry.loc.y -= padding;
-        effect_geometry.size.w += padding * 2.0;
-        effect_geometry.size.h += padding * 2.0;
-    }
-
     let mut subregion = None;
     if let Some(rects) = blur_region {
         if rects.is_empty() {
@@ -278,12 +280,27 @@ fn render_params_for_tile(
         }
     }
 
+    // Snapshot the unexpanded rectangle *after* the blur-region branch has had
+    // its say -- this is the geometry the shader treats as the window.
+    let unpadded_geometry = effect_geometry;
+
+    // Now grow the *capture* region, so refraction has real pixels to sample
+    // beyond the window/surface edge. Everything that describes the window
+    // itself keeps using `unpadded_geometry` above.
+    if padding > 0.0 {
+        effect_geometry.loc.x -= padding;
+        effect_geometry.loc.y -= padding;
+        effect_geometry.size.w += padding * 2.0;
+        effect_geometry.size.h += padding * 2.0;
+    }
+
     // This corner radius is reset to self.corner_radius in render().
     let clip = clip.then_some((geometry, CornerRadius::default()));
 
     Some(RenderParams {
         geometry: effect_geometry,
         original_geometry: geometry,
+        unpadded_geometry,
         subregion,
         clip,
         scale,
@@ -343,12 +360,32 @@ pub fn render_for_tile(
         let mut surface_geo = surface_geo(states).unwrap_or_default().to_f64();
         surface_geo.loc += surface_off;
 
-        // Compute padding from liquid glass edge_padding
-        let padding = if let Some(lg) = &background_effect.options.liquid_glass {
-            let min_dim = geometry.size.w.min(geometry.size.h);
-            lg.edge_padding * min_dim
-        } else {
-            0.0
+        // Compute padding from liquid glass edge_padding.
+        //
+        // The xray path samples a full-screen buffer, so it can read pixels
+        // outside the window and needs no padding — skip it there. The
+        // framebuffer path can only see the element's own rect, so any
+        // refraction displacement that reaches past the edge would clamp and
+        // smear; it needs the capture region grown by at least the maximum
+        // displacement.
+        //
+        // Max displacement (shader: `offsetPx = refractionStrength * minHalfSize * circle`,
+        // which peaks at the window edge) is `strength * 0.025 * short_side` in
+        // pixels once the 0.05 config scale is folded in, i.e. a fraction
+        // `strength * 0.025` of the short side. Negative `edge_padding` means
+        // auto: use exactly that, with 20% headroom. That makes the setting
+        // size-independent and impossible to under-provision.
+        let padding = match &background_effect.options.liquid_glass {
+            Some(lg) if !background_effect.options.xray => {
+                let min_dim = geometry.size.w.min(geometry.size.h);
+                let frac = if lg.edge_padding < 0.0 {
+                    (lg.refraction_strength.max(0.0) * 0.025 * 1.2).min(400.0)
+                } else {
+                    lg.edge_padding
+                };
+                frac * min_dim
+            }
+            _ => 0.0,
         };
 
         let Some(params) = render_params_for_tile(

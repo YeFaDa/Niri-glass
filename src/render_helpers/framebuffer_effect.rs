@@ -74,9 +74,15 @@ impl FramebufferEffect {
         liquid_glass: Option<LiquidGlassOptions>,
         padding_pixels: f32,
     ) -> FramebufferEffectElement {
+        // `geo_size` / `input_to_geo` must describe the *window*, never the
+        // padded capture region: the shader works in window space and applies no
+        // padding compensation. When there is no clip rectangle (layers and
+        // popups pass `clip_to_geometry = false`), fall back to the unexpanded
+        // geometry -- falling back to `params.geometry` would feed the shader
+        // the padded size and draw the glass against the wrong rectangle.
         let (clip_geo, corner_radius) = params
             .clip
-            .unwrap_or((params.geometry, CornerRadius::default()));
+            .unwrap_or((params.unpadded_geometry, CornerRadius::default()));
 
         let mut id = self.id.clone();
         if let Some(ns) = ns {

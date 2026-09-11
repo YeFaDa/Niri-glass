@@ -56,6 +56,10 @@ uniform float lg_vibrancy;
 uniform float lg_adaptive_dim;
 uniform float lg_adaptive_boost;
 uniform float lg_edge_thickness;
+// Sampling-region expansion, in the same units as geo_size. Kept in the uniform
+// list for the Rust plumbing, but intentionally NOT read here: padding only grows
+// the capture region, and `input_to_geo` already yields window-space UVs. See the
+// note in main().
 uniform float lg_padding_pixels;
 // Virtual corner round-over, as a multiple of the real corner radius.
 // 1.0 = plain rounded-rect SDF normal; 1.5 = Kyant0's `gradRadius = radius * 1.5`.
@@ -528,16 +532,19 @@ void main() {
     color = vec4(color.rgb, 1.0);
 #endif
 
-    // Convert expanded UV to window UV when padding is active
-    // geo_size is the EXPANDED size (original window + 2*padding).
-    // coords_geo is [0,1] within the expanded area.
-    // We need windowUV = [0,1] within the ORIGINAL window.
+    // `input_to_geo` already maps v_coords into *window* space: `geo_size` is the
+    // unexpanded window size (framebuffer_effect passes `clip_geo`, which is the
+    // original geometry — never the padded capture region). So the UVs need no
+    // compensation here, and `lg_padding_pixels` is deliberately unused in this
+    // shader: padding only grows the *capture* region on the Rust side so that
+    // refraction has real pixels to sample beyond the window edge. The band it
+    // adds lands outside [0, 1] and is masked by `insideGeo` below.
+    //
+    // (Do not "fix" this by remapping windowUV against padding — an earlier
+    // attempt did exactly that and both shrank the glass and offset the SDF.)
     vec2 windowUV = coords_geo.xy;
-    if (lg_padding_pixels > 0.5) {
-        windowUV = (coords_geo.xy * geo_size - vec2(lg_padding_pixels)) / (geo_size - vec2(lg_padding_pixels * 2.0));
-    }
 
-    // Binary mask — clip to window bounds (not expanded)
+    // Binary mask — clip to window bounds
     float insideGeo = step(0.0, windowUV.x) * step(windowUV.x, 1.0)
                      * step(0.0, windowUV.y) * step(windowUV.y, 1.0);
     float lgEnabled = step(0.0001, lg_refraction_strength);
