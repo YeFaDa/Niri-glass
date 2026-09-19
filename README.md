@@ -2,27 +2,49 @@
 
 **[English](README.md)** | **[中文](README.zh-CN.md)**
 
-## Examples
+## Effects added by this fork
 
-1.
+Everything this fork changes lives on the kwin / AndroidLiquidGlass path
+(`physical-refraction 0`). Two of the effects are ports of Kyant0's
+AndroidLiquidGlass, and both are on by default.
 
-  <img width="1920" height="1080" alt="Screenshot from 2026-07-02 00-06-33" src="https://github.com/user-attachments/assets/a10b40c7-b147-4dfa-8208-28ebb4003cfc" />
+### Seven-tap spectral dispersion — `fringing`
 
-1.
+The refraction samples the backdrop **seven times**, offset along the refraction
+direction as red → orange → yellow → green → cyan → blue → purple, then mixes the
+channels back (`color.r` comes from red/orange/yellow/purple, and so on). The result
+is a chromatic fringe on the rim, strongest wherever the displacement is largest —
+i.e. right at the edge.
 
-<img width="1920" height="1080" alt="Screenshot from 2026-06-30 12-31-50" src="https://github.com/user-attachments/assets/8cad6485-b685-4bc9-b22e-8cf7801cd15a" />
+| value | what you see |
+|---|---|
+| `0` | off — a single sample, no colour separation |
+| `0.2` | a subtle fringe (recommended) |
+| `0.4`+ | the samples drift so far apart that it reads as three separate images rather than dispersion |
 
-1.
+### Depth term — `depth-effect`
 
-<img width="1920" height="1080" alt="Screenshot from 2026-06-30 12-32-48" src="https://github.com/user-attachments/assets/fccc46f0-9cda-488b-b0e1-5939d36676cf" />
+The edge normal of a plain rounded-rectangle SDF is exactly perpendicular to each
+straight edge, so content along an edge only slides **sideways** — it never leans
+toward the corner, and the turn happens abruptly inside the real corner arc.
 
-1.
+`depth-effect` blends the **inward radial** into that normal:
 
-<img width="1920" height="1080" alt="Screenshot from 2026-06-30 12-34-48" src="https://github.com/user-attachments/assets/ff3f0d17-3bf1-42e8-9660-e291189321f9" />
+```glsl
+kwinNormal = normalize(fanNormal - depthEffect * normalize(position));
+```
 
-1.
+so the direction rotates progressively along the *whole* edge instead of only at the
+corners. This is Kyant0's `depthEffect`, and it is what makes straight lines visibly
+"wrap around" the corner instead of ending in a kink.
 
-<img width="1920" height="1080" alt="Screenshot from 2026-06-30 12-40-02" src="https://github.com/user-attachments/assets/eaeda5ef-1fe3-4e51-8466-10e461240021" />
+| value | what you see |
+|---|---|
+| `1` | reference behaviour |
+| `0` | plain SDF normal — the corner reads as an elbow |
+
+Combined with `corner-fan` (which decides *how wide* the corner arc is), these are
+the two effects that give the kwin path its shape.
 
 ## Files
 
@@ -45,53 +67,73 @@
 
 ## How to Apply
 
-### Nix / NixOS (flake)
+### Nix / NixOS — overlay onto your own niri (recommended)
 
-This repo ships a flake that builds niri with the liquid-glass overlay applied
-on top of the matching upstream niri release (pinned to rev `49fc611`, niri
-26.04). No manual file copying or `install.sh` needed.
+This repo is a set of loose source files, not a fork that has to be built from a
+pinned base. The intended way to use it is to overlay those files onto the niri
+you already have, so your own nixpkgs, kernel and Rust toolchain stay in play.
 
-Quick try-out (no install):
+```nix
+# flake.nix: add the input
+inputs.niri-glass.url = "github:YeFaDa/Niri-glass";
+```
+
+```nix
+# wherever your nixpkgs overlays are defined (e.g. a configuration module)
+{ config, lib, pkgs, inputs, ... }:
+{
+  nixpkgs.overlays = [
+    (final: prev: {
+      niri-glass = prev.niri.overrideAttrs (old: {
+        pname = "niri-glass";
+        postPatch = (old.postPatch or "") + ''
+          echo "==> Applying Niri-glass liquid-glass overlay"
+          chmod -R u+w src/render_helpers niri-config/src
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/liquid_glass.rs src/render_helpers/liquid_glass.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/background_effect.rs src/render_helpers/background_effect.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/framebuffer_effect.rs src/render_helpers/framebuffer_effect.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/xray.rs src/render_helpers/xray.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/mod.rs src/render_helpers/mod.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/shaders/clipped_surface.frag src/render_helpers/shaders/clipped_surface.frag
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/shaders/mod.rs src/render_helpers/shaders/mod.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/niri-config/src/appearance.rs niri-config/src/appearance.rs
+        '';
+      });
+    })
+  ];
+}
+```
+
+Then point your session at the package:
+
+```nix
+programs.niri.package = pkgs.niri-glass;
+```
+
+> [!IMPORTANT]
+> **Compatibility: tested on niri 26.04 only.** The overlay copies in whole
+> source files (`background_effect.rs`, `appearance.rs`, `clipped_surface.frag`, …),
+> so it has to be applied to a niri of that generation. On other versions it may
+> fail to compile or behave unexpectedly. The overlay touches no
+> `Cargo.toml` / `Cargo.lock`, so the vendored dependency set stays identical
+> and only the `niri` crate recompiles.
+
+### Nix / NixOS (flake, builds the base for you)
+
+If you would rather not wire the overlay yourself, the repo also ships a flake
+that builds the pinned base niri (rev `49fc611`, niri 26.04) with the overlay
+already applied:
 
 ```bash
-nix run github:zaroutt/Niri-glass          # run the compositor
-nix shell github:zaroutt/Niri-glass        # drop niri-glass into a shell
-nix develop github:zaroutt/Niri-glass      # dev shell (rust + niri build deps)
-nix build  github:zaroutt/Niri-glass       # build, result at ./result
+nix run github:YeFaDa/Niri-glass          # run the compositor
+nix shell github:YeFaDa/Niri-glass        # drop niri-glass into a shell
+nix develop github:YeFaDa/Niri-glass      # dev shell (rust + niri build deps)
+nix build  github:YeFaDa/Niri-glass       # build, result at ./result
 ```
 
-NixOS (flake), reusing the upstream niri session/portal/polkit wiring:
-
-```nix
-{
-  inputs.niri-glass.url = "github:zaroutt/Niri-glass";
-
-  # in your nixosConfiguration modules:
-  imports = [ inputs.niri-glass.nixosModules.default ];
-  programs.niri-glass.enable = true;
-}
-```
-
-home-manager:
-
-```nix
-{
-  imports = [ inputs.niri-glass.homeManagerModules.default ];
-  programs.niri-glass = {
-    enable = true;
-    # optional: manage ~/.config/niri/config.kdl
-    config = builtins.readFile ./niri/config.kdl;
-  };
-}
-```
-
-Or just add the package via the overlay (`overlays.default` exposes
-`pkgs.niri-glass`) or reference `inputs.niri-glass.packages.<system>.niri-glass`
-directly anywhere a package is expected (e.g. `programs.niri.package`).
-
-> The flake is pinned to the exact niri revision these overlay files were
-> written against. If you bump the `niri` input, refresh the overlay files to
-> match or the build may fail to compile.
+`nixosModules.default` / `homeManagerModules.default` provide the session wiring
+on top of that package, and `packages.<system>.niri-glass` can be referenced
+anywhere a package is expected.
 
 ### install.sh (non-Nix)
 
@@ -99,7 +141,7 @@ Clone the official repo and this one and run the install script:
 
 ```bash
 git clone https://github.com/niri-wm/niri
-git clone https://github.com/zaroutt/Niri-glass
+git clone https://github.com/YeFaDa/Niri-glass
 cd Niri-glass
 ```
 
@@ -263,42 +305,22 @@ adaptive-dim 0.25
 adaptive-boost 0.25
 ```
 
-<img width="462" height="276" alt="Screenshot from 2026-06-30 13-40-40" src="https://github.com/user-attachments/assets/ef2949f8-c8b7-4805-a2b5-7aaa87507525" />
+Raising `saturation` / `vibrancy` and turning on both adaptive terms keeps the
+backdrop readable but softens the rim, so the glass reads as frosted rather than
+polished. Setting every parameter to `0` (except `saturation 1`) removes the effect
+entirely — useful as a baseline when tuning.
 
-With all parameters set to 0 (except saturation, which is set to 1):
+### Notes on individual parameters
 
-<img width="462" height="276" alt="Screenshot from 2026-06-30 13-37-39" src="https://github.com/user-attachments/assets/991553ad-66d0-4a62-8519-8ce3b04bdcc0" /> ```
-
-### others
-
-- fringing:
-  this make rgb colors appear
-
-  <img width="243" height="63" alt="Screenshot from 2026-06-30 16-13-20" src="https://github.com/user-attachments/assets/56d589e5-ffa1-46e9-a58a-996d015070e9" />
-
-- edge-lightning
-
-  this make the wallpapers colors blend with the edges
-
-<img width="533" height="320" alt="Screenshot from 2026-06-30 16-18-04" src="https://github.com/user-attachments/assets/91d4b152-8bec-47dc-b4dd-6f10a30a441d" />
-
-<img width="531" height="329" alt="Screenshot from 2026-06-30 16-17-54" src="https://github.com/user-attachments/assets/c4ba4a55-a3cd-49b5-ae15-fdf9154650c4" />
-
-## More examples
-
-### Interaction with live wallpaper with shadows enabled
-
-https://github.com/user-attachments/assets/4fceeaaf-4ff1-4c4d-adcf-af52cd33a912
-
-### With xray set to false
-
-<img width="1920" height="1080" alt="Screenshot from 2026-07-22 20-58-17" src="https://github.com/user-attachments/assets/049102f2-d7c9-4d0b-8862-671c34c61d18" />
-
-
-
+- `fringing` separates the RGB channels along the refraction direction (see
+  [Seven-tap spectral dispersion](#seven-tap-spectral-dispersion--fringing)).
+  `0` removes the colour edge completely.
+- `edge-lighting` lets the wallpaper's colours bleed into the window edge, so the
+  rim picks up the local palette instead of staying neutral.
+- `glow-weight` is the rim highlight itself; `0` leaves the refraction intact but
+  removes the bright border, which is the quickest way to tell the two apart.
 
 ## Warnings
 - Tested in the 26.04 version
 - newer versions may conflict with this.
 - Vibe coded project so expect weirdly behavior.
-  

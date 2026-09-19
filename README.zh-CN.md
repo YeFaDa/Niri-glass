@@ -1,26 +1,42 @@
 # Niri 液态玻璃
 
-## 效果图
+## 本 fork 增加的效果
 
-1.
+本 fork 的所有改动都在 kwin / AndroidLiquidGlass 这条路上(`physical-refraction 0`)。
+其中两个效果是从 Kyant0 的 AndroidLiquidGlass 移植过来的,默认都开着。
 
-  <img width="1920" height="1080" alt="截图 2026-07-02 00-06-33" src="https://github.com/user-attachments/assets/a10b40c7-b147-4dfa-8208-28ebb4003cfc" />
+### 七点光谱色散 —— `fringing`
 
-1.
+折射会对背景做**七次采样**,沿折射方向依次偏移:
+红 → 橙 → 黄 → 绿 → 青 → 蓝 → 紫,再把通道混回去(`color.r` 取自红/橙/黄/紫,其余同理)。
+结果是边缘出现彩色描边,且**位移最大处最明显** —— 也就是窗口最边缘那一圈。
 
-<img width="1920" height="1080" alt="截图 2026-06-30 12-31-50" src="https://github.com/user-attachments/assets/8cad6485-b685-4bc9-b22e-8cf7801cd15a" />
+| 值 | 看到什么 |
+|---|---|
+| `0` | 关闭 —— 单次采样,没有颜色分离 |
+| `0.2` | 淡淡的彩边(推荐) |
+| `0.4`+ | 采样点拉得太开,看起来像三张错位图,而不是色散 |
 
-1.
+### 深度项 —— `depth-effect`
 
-<img width="1920" height="1080" alt="截图 2026-06-30 12-32-48" src="https://github.com/user-attachments/assets/fccc46f0-9cda-488b-b0e1-5939d36676cf" />
+普通圆角矩形的 SDF **法线垂直于每条直边**,所以直边处的内容只会**横向平移**、
+不会朝角部倾,转向全部挤在真实的圆角弧里,读起来就是一个折肘。
 
-1.
+`depth-effect` 把**朝内的径向**混进法线:
 
-<img width="1920" height="1080" alt="截图 2026-06-30 12-34-48" src="https://github.com/user-attachments/assets/ff3f0d17-3bf1-42e8-9660-e291189321f9" />
+```glsl
+kwinNormal = normalize(fanNormal - depthEffect * normalize(position));
+```
 
-1.
+于是方向沿**整条边**渐进旋转,而不是只在角部才转。这就是 Kyant0 的 `depthEffect`,
+也是直线看起来会"绕过角部"的原因。
 
-<img width="1920" height="1080" alt="截图 2026-06-30 12-40-40" src="https://github.com/user-attachments/assets/eaeda5ef-1fe3-4e51-8466-10e461240021" />
+| 值 | 看到什么 |
+|---|---|
+| `1` | 参考实现的行为 |
+| `0` | 纯 SDF 法线 —— 角部读成一个折肘 |
+
+配合 `corner-fan`(决定角弧**有多宽**),这两个效果共同决定了 kwin 路径的形状。
 
 ## 文件
 
@@ -43,57 +59,76 @@
 
 ## 如何使用
 
-### Nix / NixOS(flake)
+### Nix / NixOS —— 覆盖到你自己的 niri 上(推荐)
 
-本仓库自带 flake,基于匹配的上游 niri 版本(pin 在 rev `49fc611`,niri 26.04)打上液态玻璃补丁。无需手动复制文件或跑 `install.sh`。
+本仓库是一组零散源文件,不是一个必须从固定基线编译的 fork。推荐做法是把这些文件
+覆盖到你**已有的 niri** 上,这样你自己的 nixpkgs、内核和 Rust 工具链都保持不变。
 
-快速试用(不安装):
+```nix
+# flake.nix:加上这个 input
+inputs.niri-glass.url = "github:YeFaDa/Niri-glass";
+```
+
+```nix
+# 在你定义 nixpkgs overlays 的地方(比如某个配置模块里)
+{ config, lib, pkgs, inputs, ... }:
+{
+  nixpkgs.overlays = [
+    (final: prev: {
+      niri-glass = prev.niri.overrideAttrs (old: {
+        pname = "niri-glass";
+        postPatch = (old.postPatch or "") + ''
+          echo "==> Applying Niri-glass liquid-glass overlay"
+          chmod -R u+w src/render_helpers niri-config/src
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/liquid_glass.rs src/render_helpers/liquid_glass.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/background_effect.rs src/render_helpers/background_effect.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/framebuffer_effect.rs src/render_helpers/framebuffer_effect.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/xray.rs src/render_helpers/xray.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/mod.rs src/render_helpers/mod.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/shaders/clipped_surface.frag src/render_helpers/shaders/clipped_surface.frag
+          cp --no-preserve=mode ${inputs.niri-glass}/src/render_helpers/shaders/mod.rs src/render_helpers/shaders/mod.rs
+          cp --no-preserve=mode ${inputs.niri-glass}/niri-config/src/appearance.rs niri-config/src/appearance.rs
+        '';
+      });
+    })
+  ];
+}
+```
+
+然后把 session 指向这个包:
+
+```nix
+programs.niri.package = pkgs.niri-glass;
+```
+
+> [!IMPORTANT]
+> **兼容性:仅在 niri 26.04 测试过。** overlay 是整文件替换
+> (`background_effect.rs`、`appearance.rs`、`clipped_surface.frag` 等),
+> 所以必须用在**同一代**的 niri 上。其他版本可能编译失败或行为异常。
+> overlay 不动 `Cargo.toml` / `Cargo.lock`,所以 vendor 的依赖集合完全不变,
+> 只有 `niri` 这个 crate 会重新编译。
+
+### Nix / NixOS(flake,帮你编译基线)
+
+不想自己接 overlay 的话,仓库也带了 flake,基于固定基线
+(rev `49fc611`,niri 26.04)加上 overlay 直接编译:
 
 ```bash
-nix run github:zaroutt/Niri-glass          # 跑合成器
-nix shell github:zaroutt/Niri-glass        # 把 niri-glass 加进 shell
-nix develop github:zaroutt/Niri-glass      # 开发 shell(rust + niri 编译依赖)
-nix build  github:zaroutt/Niri-glass       # 编译,产物在 ./result
+nix run github:YeFaDa/Niri-glass          # 跑合成器
+nix shell github:YeFaDa/Niri-glass        # 把 niri-glass 加进 shell
+nix develop github:YeFaDa/Niri-glass      # 开发 shell(rust + niri 编译依赖)
+nix build  github:YeFaDa/Niri-glass       # 编译,产物在 ./result
 ```
 
-NixOS(flake),复用上游 niri 的 session / portal / polkit 接线:
-
-```nix
-{
-  inputs.niri-glass.url = "github:zaroutt/Niri-glass";
-
-  # in your nixosConfiguration modules:
-  imports = [ inputs.niri-glass.nixosModules.default ];
-  programs.niri-glass.enable = true;
-}
-```
-
-home-manager:
-
-```nix
-{
-  imports = [ inputs.niri-glass.homeManagerModules.default ];
-  programs.niri-glass = {
-    enable = true;
-    # 可选:管理 ~/.config/niri/config.kdl
-    config = builtins.readFile ./niri/config.kdl;
-  };
-}
-```
-
-或者通过 overlay 加进包集合(`overlays.default` 暴露 `pkgs.niri-glass`),
-或者直接在任何接收包的地方引用 `inputs.niri-glass.packages.<system>.niri-glass`
-(比如 `programs.niri.package`)。
-
-> flake pin 在这些补丁文件所针对的精确 niri 提交。如果你 bump 了 `niri` 输入,
-> 同步刷新补丁文件,否则可能编译失败。
+`nixosModules.default` / `homeManagerModules.default` 在这个包之上提供 session 接线,
+`packages.<system>.niri-glass` 可以在任何接收包的地方引用。
 
 ### install.sh(非 Nix 方式)
 
 克隆仓库并跑安装脚本:
 
 ```bash
-git clone https://github.com/zaroutt/Niri-glass
+git clone https://github.com/YeFaDa/Niri-glass
 cd Niri-glass
 ```
 
@@ -263,25 +298,17 @@ adaptive-dim 0.25
 adaptive-boost 0.25
 ```
 
-<img width="462" height="276" alt="截图 2026-06-30 13-40-40" src="https://github.com/user-attachments/assets/ef2949f8-c8b7-4805-a2b5-7aaa87507525" />
+提高 `saturation` / `vibrancy` 并同时打开两个自适应项,背景会保持可读但变柔,
+边缘高光也被压下去 —— 整体读起来是磨砂而不是抛光。把所有参数设为 `0`(只留
+`saturation 1`)则完全去掉效果,调参时可以拿它当基准。
 
-所有参数设为 0(只留 `saturation = 1`):
+### 单个参数的说明
 
-<img width="462" height="276" alt="截图 2026-06-30 13-37-39" src="https://github.com/user-attachments/assets/991553ad-66d0-4a62-8519-8ce3b04bdcc0" />
-
-### 其他
-
-- `fringing`(色散):
-  让 RGB 三通道分离,边缘出现彩色。
-
-  <img width="243" height="63" alt="截图 2026-06-30 16-13-20" src="https://github.com/user-attachments/assets/56d589e5-ffa1-46e9-a58a-996d015070e9" />
-
-- `edge-lighting`(边缘光):
-  让壁纸的颜色向窗口边缘渗透。
-
-<img width="533" height="320" alt="截图 2026-06-30 16-18-04" src="https://github.com/user-attachments/assets/91d4b152-8bec-47dc-b4dd-6f10a30a441d" />
-
-<img width="531" height="329" alt="截图 2026-06-30 16-17-54" src="https://github.com/user-attachments/assets/c4ba4a55-a3cd-49b5-ae15-fdf9154650c4" />
+- `fringing` 会沿折射方向分离 RGB 通道(见[七点光谱色散](#七点光谱色散--fringing)),
+  设 `0` 就完全没有彩边。
+- `edge-lighting` 让壁纸的颜色渗进窗口边缘,高光会带上周边的色调而不是保持中性。
+- `glow-weight` 是边框高光本身,设 `0` 会保留折射但去掉那圈亮边 ——
+  这也是区分这两者最快的方法。
 
 ## 提示
 
