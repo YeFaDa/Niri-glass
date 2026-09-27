@@ -416,9 +416,25 @@ vec3 applyFrostedTint(vec3 color, float edgeProximity) {
 }
 
 // Outline -- kwin-style with HyprGlass specular
+//
+// The two edge lights are split by side: `glowStrength` (rim highlight, the 1-3px
+// thickness highlight/shadow, Fresnel and the top specular) only touches the top
+// and bottom borders, `edgeLighting` (the additive content colour) only the left
+// and right ones.
+//
+// The split is "which of the two edges is nearer", blended over `sideBlend` px.
+// A hard pick here would step the light level by its full amount across the
+// corner diagonal -- the same class of colour seam the direction field had.
 vec3 glassOutline(vec2 position, vec2 blurSize, GlassFragment s, float glowStrength, float edgeLighting, float edgeProximity)
 {
-    float rimMask = clamp(0.25 * s.concaveFactor, 0.0, glowStrength);
+    vec2 halfBlurSize = blurSize * 0.5;
+    float sideBlend = max(2.0 * niri_scale, min(halfBlurSize.x, halfBlurSize.y) * 0.05);
+    float dTB = halfBlurSize.y - abs(position.y);          // distance to the top / bottom edge
+    float dLR = halfBlurSize.x - abs(position.x);          // distance to the left / right edge
+    float vertical = smoothstep(-sideBlend, sideBlend, dLR - dTB);   // 1 = top / bottom
+    float horizontal = 1.0 - vertical;
+
+    float rimMask = clamp(0.25 * s.concaveFactor, 0.0, glowStrength) * vertical;
     // 内容色高光：边框光取折射内容色（绕亮度轴提饱和 ×2、提亮 ×1.3、5% 抬底），替代纯白
     // 暗内容下光也随之变暗——这是"反射内部颜色"的物理行为
     vec3 cc = s.color.rgb;
@@ -426,7 +442,7 @@ vec3 glassOutline(vec2 position, vec2 blurSize, GlassFragment s, float glowStren
     vec3 contentLight = clamp(mix(vec3(cLum), cc, 2.0) * 1.3 + vec3(0.05), 0.0, 1.0);
     vec3 glow = mix(s.color.rgb, contentLight, rimMask);
     if (edgeLighting > 0.001) {
-        glow += (s.color.rgb * s.concaveFactor) * edgeLighting;
+        glow += (s.color.rgb * s.concaveFactor) * edgeLighting * horizontal;
     }
 
     if (glowStrength > 0.0) {
@@ -439,20 +455,20 @@ vec3 glassOutline(vec2 position, vec2 blurSize, GlassFragment s, float glowStren
         float highlightMask = smoothstep(-blurSize.y * 0.7, blurSize.y * 0.7, position.y) *
                               smoothstep(-blurSize.x * 0.7, blurSize.x * 0.7, position.x);
 
-        glow = mix(glow, contentLight, thicknessShadow * shadowMask);
-        glow = mix(glow, contentLight, thicknessShadow * highlightMask);
+        glow = mix(glow, contentLight, thicknessShadow * shadowMask * vertical);
+        glow = mix(glow, contentLight, thicknessShadow * highlightMask * vertical);
     }
 
     // HyprGlass-style Fresnel
     if (glowStrength > 0.001) {
-        float fresnel = edgeProximity * edgeProximity * glowStrength * 0.15;
+        float fresnel = edgeProximity * edgeProximity * glowStrength * 0.15 * vertical;
         glow += contentLight * fresnel;
     }
 
     // HyprGlass-style specular (top-biased)
     if (glowStrength > 0.001) {
         float topBias = pow(max(1.0 - (position.y / blurSize.y + 0.5), 0.0), 2.0);
-        float spec = topBias * edgeProximity * edgeProximity * glowStrength * 0.08;
+        float spec = topBias * edgeProximity * edgeProximity * glowStrength * 0.08 * vertical;
         glow += contentLight * spec;
     }
 

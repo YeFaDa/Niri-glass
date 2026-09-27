@@ -108,6 +108,33 @@ flake 自带的打包方式降级为备选方案。
 
 **要治它只能夹带宽**：`H_eff = min(H, k·r)`，使 `d ≤ r`（`d = u*·H`，`u*` 只由 `A/H` 决定）。
 
+## 边缘光按边分侧（2026-09-27）
+
+`glassOutline` 里两束光改成按边分：`glow-weight` 只作用于**上下**边框，
+`edge-lighting` 只作用于**左右**边框。
+
+```glsl
+vec2 halfBlurSize = blurSize * 0.5;
+float sideBlend = max(2.0 * niri_scale, min(halfBlurSize.x, halfBlurSize.y) * 0.05);
+float dTB = halfBlurSize.y - abs(position.y);      // 到上/下边的距离
+float dLR = halfBlurSize.x - abs(position.x);      // 到左/右边的距离
+float vertical = smoothstep(-sideBlend, sideBlend, dLR - dTB);   // 1 = 上下
+float horizontal = 1.0 - vertical;
+```
+
+乘在哪：`rimMask`、厚度块的两次 `mix`、Fresnel、顶部镜面 → `* vertical`；
+`edge-lighting` 那一项 → `* horizontal`。
+
+**为什么用 smoothstep 而不是硬选边**：硬选会在角部 45° 换手线上让光强整档跳，
+又是同一类颜色硬边。实测跨换手线的 `Δvertical` 随步长线性降
+（1.0/0.5/0.25/0.125px → 0.0416/0.0208/0.0104/0.0052），连续。
+
+实测（window-rule）：上/下边中点 `vertical=1.000`、左/右边中点 `horizontal=1.000`、
+角部 45° 处各 0.500。`sideBlend`：窗口 25.5px、400×300 面板 7.5px、1200×48 的 bar 取地板 3px。
+
+> 注意：底部内阴影（`bottomBias * edgeProximity² * 0.06`）**不受任何开关控制**，
+> 本来就只在底边，本次未动。
+
 ## 构建与验证
 
 - 本机**没有 cargo/rustc**,Rust 侧只能人工核对。
