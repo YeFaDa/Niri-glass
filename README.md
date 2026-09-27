@@ -2,6 +2,8 @@
 
 **[English](README.md)** | **[中文](README.zh-CN.md)**
 
+<img width="1920" height="1200" alt="Niri with the liquid glass background effect" src="assets/screenshot.jpg" />
+
 ## Effects added by this fork
 
 Everything this fork changes lives on the kwin / AndroidLiquidGlass path

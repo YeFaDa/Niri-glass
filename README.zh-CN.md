@@ -1,5 +1,7 @@
 # Niri 液态玻璃
 
+<img width="1920" height="1200" alt="Niri 液态玻璃效果截图" src="assets/screenshot.jpg" />
+
 ## 本 fork 增加的效果
 
 本 fork 的所有改动都在 kwin / AndroidLiquidGlass 这条路上(`physical-refraction 0`)。
