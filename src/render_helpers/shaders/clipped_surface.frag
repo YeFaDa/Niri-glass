@@ -113,11 +113,23 @@ vec4 roundedRectangle(vec2 fragCoord, vec3 color, vec4 cornerRadius, vec2 blurSi
     return vec4(color, mix(1.0, 0.0, s));
 }
 
-// Per-corner radius -- same quadrant rule as roundedRectangleDist.
+// Per-corner radius -- same quadrant rule as roundedRectangleDist, but blended
+// across the axes instead of picked with a hard branch.
+//
+// With one radius everywhere (the usual case) this is exactly that constant, so
+// nothing changes. With per-corner radii the hard pick stepped the radius along
+// the axes, `fan` is derived from it, and the whole direction field stepped with
+// it -- a line running from the edge toward the window centre, i.e. far longer
+// than the corner crease. Only the *fan* is smoothed here; `roundedRectangleDist`
+// keeps the hard pick, because there it defines the actual silhouette. That is
+// safe: at the axes its value does not depend on the radius at all.
+//
 // cr: x=bottom-left, y=bottom-right, z=top-left, w=top-right
 float cornerRadiusAt(vec2 p, vec4 cr)
 {
-    return p.x > 0.0 ? (p.y > 0.0 ? cr.y : cr.w) : (p.y > 0.0 ? cr.x : cr.z);
+    float blend = max(4.0 * niri_scale, 1.0);
+    vec2 t = smoothstep(vec2(-blend), vec2(blend), p);
+    return mix(mix(cr.z, cr.w, t.x), mix(cr.x, cr.y, t.x), t.y);
 }
 
 // Inward unit normal of the silhouette, with a *virtual* corner round-over.
@@ -131,17 +143,38 @@ float cornerRadiusAt(vec2 p, vec4 cr)
 // direction rotates so slowly over such a long stretch of edge that the mapping
 // folds back on itself -- which shows up as a hook / loop in the content right
 // at the corner.
+//
+// Everything below is continuous *on purpose*, and that matters more than it
+// looks: the nearest-edge pick used to be a hard branch (`q.x > q.y`), which
+// steps the direction by a full 90 degrees across the 45 degree diagonal that
+// starts at the virtual arc centre. A step in the direction moves the sampled
+// pixel sideways in a single jump -- a hard colour seam -- no matter how small
+// the displacement there is (it is only ~4.5px on a 1080p-ish window, and it
+// still reads as a line). A chamfered hard corner does not help: it just trades
+// one 90 degree step for two 45 degree ones. What follows is the continuous
+// version of that chamfer.
 vec2 glassInwardNormal(vec2 p, vec2 b, float fan)
 {
     vec2 s = vec2(p.x >= 0.0 ? 1.0 : -1.0, p.y >= 0.0 ? 1.0 : -1.0);
     float r = clamp(fan, 1e-3, min(b.x, b.y));
     vec2 q = abs(p) - b + r;
-    if (q.x > 0.0 && q.y > 0.0) {
-        return normalize(s * (b - r) - p);   // radial, around the corner arc centre
-    } else if (q.x > q.y) {
-        return vec2(-s.x, 0.0);              // left / right edge
-    }
-    return vec2(0.0, -s.y);                  // top / bottom edge
+
+    // Blend width in px. Far from the diagonal `w` saturates to 0 or 1, so the
+    // straight edges and the interior keep exactly the old edge normals.
+    float blend = max(fan * 0.15, 2.0 * niri_scale);
+    float w = smoothstep(-blend, blend, q.x - q.y);   // 1 = x edge, 0 = y edge
+    vec2 nEdge = vec2(-s.x * w, -s.y * (1.0 - w));
+
+    // Radial around the virtual arc centre -- that is what gives the corner its
+    // lens look. A purely radial field winds a full turn around its own centre
+    // and no continuous field can do that, so fade it in across the corner
+    // square and let `nEdge` cover the centre itself.
+    vec2 v = s * (b - r) - p;
+    float vl2 = dot(v, v);
+    vec2 nRad = vl2 > 1e-6 ? v / sqrt(vl2) : nEdge;
+    float t = smoothstep(0.0, blend, min(q.x, q.y));  // 0 outside the corner square
+
+    return normalize(mix(nEdge, nRad, t));
 }
 
 // Refraction with two modes:
@@ -202,32 +235,38 @@ GlassFragment glassRefraction(vec2 uv_tex, vec2 uv_min, vec2 uv_max, vec2 positi
     float circle = 1.0 - sqrt(max(0.0, 1.0 - (1.0 - u) * (1.0 - u)));
     float offsetPx = refractionStrength * minHalfSize * circle;
 
-    vec4 color = vec4(0.0);
-    if (offsetPx < 0.5) {
-        // 带外：原样采样
-        color = texture2D(tex, clamp(uv_tex, uv_min, uv_max));
-    } else {
-        vec2 baseOffset = kwinNormal * (offsetPx * uvScale);
-        baseOffset.y = -baseOffset.y;
+    vec2 baseOffset = kwinNormal * (offsetPx * uvScale);
+    baseOffset.y = -baseOffset.y;
 
+    // Both paths sample at the *same* centre; the branch only decides whether the
+    // 7-tap chromatic split is worth resolving.
+    //
+    // The old `if (offsetPx < 0.5)` early-out sampled at `uv_tex` instead, so the
+    // sampling position stepped by up to 0.5px where the band fades out -- a
+    // sub-pixel hard ring, the same defect class as the corner crease. It cannot
+    // just be deleted: with fringing on, that would pay 7 taps across the whole
+    // window interior, where `offsetPx` is exactly 0. Testing the *fringe spread*
+    // instead covers that case, and the spread is <= 0.15px wherever the branch
+    // still short-cuts, so the two paths are indistinguishable there.
+    vec4 color = vec4(0.0);
+    if (lg_fringing <= 0.001 || offsetPx * lg_fringing <= 0.15) {
+        // 单次采样：与下面七点路径共用同一个采样中心，只是不做色散平均
+        color = texture2D(tex, clamp(uv_tex + baseOffset, uv_min, uv_max));
+    } else {
         // Kyant0 七点光谱色散 (chromaticAberration)：以折射后坐标为中心 ±disp
-        if (lg_fringing > 0.001) {
-            vec2 refracted = uv_tex + baseOffset;
-            vec2 disp = baseOffset * lg_fringing;
-            vec4 red    = texture2D(tex, clamp(refracted + disp,               uv_min, uv_max));
-            vec4 orange = texture2D(tex, clamp(refracted + disp * (2.0 / 3.0), uv_min, uv_max));
-            vec4 yellow = texture2D(tex, clamp(refracted + disp * (1.0 / 3.0), uv_min, uv_max));
-            vec4 green  = texture2D(tex, clamp(refracted,                      uv_min, uv_max));
-            vec4 cyan   = texture2D(tex, clamp(refracted - disp * (1.0 / 3.0), uv_min, uv_max));
-            vec4 blue   = texture2D(tex, clamp(refracted - disp * (2.0 / 3.0), uv_min, uv_max));
-            vec4 purple = texture2D(tex, clamp(refracted - disp,               uv_min, uv_max));
-            color.r = red.r    / 3.5 + orange.r / 3.5 + yellow.r / 3.5 + purple.r / 7.0;
-            color.g = orange.g / 7.0 + yellow.g / 3.5 + green.g  / 3.5 + cyan.g   / 3.5;
-            color.b = cyan.b   / 3.0 + blue.b   / 3.0 + purple.b / 3.0;
-            color.a = (red.a + orange.a + yellow.a + green.a + cyan.a + blue.a + purple.a) / 7.0;
-        } else {
-            color = texture2D(tex, clamp(uv_tex + baseOffset, uv_min, uv_max));
-        }
+        vec2 refracted = uv_tex + baseOffset;
+        vec2 disp = baseOffset * lg_fringing;
+        vec4 red    = texture2D(tex, clamp(refracted + disp,               uv_min, uv_max));
+        vec4 orange = texture2D(tex, clamp(refracted + disp * (2.0 / 3.0), uv_min, uv_max));
+        vec4 yellow = texture2D(tex, clamp(refracted + disp * (1.0 / 3.0), uv_min, uv_max));
+        vec4 green  = texture2D(tex, clamp(refracted,                      uv_min, uv_max));
+        vec4 cyan   = texture2D(tex, clamp(refracted - disp * (1.0 / 3.0), uv_min, uv_max));
+        vec4 blue   = texture2D(tex, clamp(refracted - disp * (2.0 / 3.0), uv_min, uv_max));
+        vec4 purple = texture2D(tex, clamp(refracted - disp,               uv_min, uv_max));
+        color.r = red.r    / 3.5 + orange.r / 3.5 + yellow.r / 3.5 + purple.r / 7.0;
+        color.g = orange.g / 7.0 + yellow.g / 3.5 + green.g  / 3.5 + cyan.g   / 3.5;
+        color.b = cyan.b   / 3.0 + blue.b   / 3.0 + purple.b / 3.0;
+        color.a = (red.a + orange.a + yellow.a + green.a + cyan.a + blue.a + purple.a) / 7.0;
     }
 
     return GlassFragment(color, dist, edgeFactor, concaveFactor, glassNormal, 1.0);
